@@ -17,6 +17,9 @@ dev = [
     "pytest>=8.0",
 ]
 
+[project.scripts]
+framework-advisor = "advisor.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
