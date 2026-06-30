@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
+from langchain.agents.structured_output import StructuredOutputValidationError
 from pydantic import ValidationError
 
 from advisor.agent import build_advisor_agent
@@ -36,19 +37,39 @@ def format_response(response: AdvisorResponse) -> str:
     lines = [
         f"Рекомендованный фреймворк: {display_name} "
         f"({response.recommended_framework})",
-        "",
-        "Почему:",
-        "",
-        *(f"- {reason}" for reason in response.reasoning),
-        "",
-        "Подходящие компоненты:",
-        "",
-        *(f"- {component}" for component in response.suitable_components),
-        "",
-        "Риски и ограничения:",
-        "",
-        *(f"- {risk}" for risk in response.risks),
     ]
+
+    if response.comparison:
+        lines.append("")
+        lines.append("Сравнение вариантов:")
+        for item in response.comparison:
+            item_display_name = FRAMEWORK_PROFILES[item.framework]["display_name"]
+            lines.append("")
+            lines.append(item_display_name)
+            lines.append("Сильные стороны:")
+            lines.extend(f"- {strength}" for strength in item.strengths)
+            lines.append("Ограничения:")
+            lines.extend(f"- {limitation}" for limitation in item.limitations)
+            lines.append("Соответствие проекту:")
+            lines.append(f"- {item.fit_for_project}")
+
+    lines.extend(
+        [
+            "",
+            "Почему:",
+            "",
+            *(f"- {reason}" for reason in response.reasoning),
+            "",
+            "Подходящие компоненты:",
+            "",
+            *(f"- {component}" for component in response.suitable_components),
+            "",
+            "Риски и ограничения:",
+            "",
+            *(f"- {risk}" for risk in response.risks),
+        ]
+    )
+
     return "\n".join(lines)
 
 
@@ -147,6 +168,12 @@ def run_cli() -> int:
                 user_message=stripped_input,
                 thread_id=thread_id,
             )
+        except StructuredOutputValidationError:
+            print(
+                "Не удалось получить структурированный ответ от модели. "
+                "Попробуйте повторить запрос ещё раз."
+            )
+            continue
         except (ValueError, ValidationError) as error:
             print(f"Не удалось обработать запрос: {error}")
             continue

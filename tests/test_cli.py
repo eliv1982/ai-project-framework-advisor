@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from inspect import signature
+
 import pytest
+from langchain.agents.structured_output import StructuredOutputValidationError
+from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
 import advisor.cli as cli
@@ -29,6 +33,20 @@ class QueueAgent:
 def _make_response(**overrides):
     payload = {
         "recommended_framework": "langchain",
+        "comparison": [
+            {
+                "framework": "langchain",
+                "strengths": ["Развитая поддержка агентов"],
+                "limitations": ["Быстро меняющийся API между версиями"],
+                "fit_for_project": "Хорошо подходит для оркестрации агентов.",
+            },
+            {
+                "framework": "llamaindex",
+                "strengths": ["Сильная поддержка RAG"],
+                "limitations": ["Меньше возможностей для сложных агентов"],
+                "fit_for_project": "Подходит, если важен поиск по документам.",
+            },
+        ],
         "reasoning": ["Причина один", "Причина два"],
         "suitable_components": ["Tools", "Middleware"],
         "risks": ["Риск один"],
@@ -68,6 +86,11 @@ def test_format_response_contains_headers_and_content_without_mutating_input():
     assert "Рекомендованный фреймворк:" in formatted
     assert "LangChain" in formatted
     assert "(langchain)" in formatted
+    assert "Сравнение вариантов:" in formatted
+    assert "LlamaIndex" in formatted
+    assert "Сильные стороны:" in formatted
+    assert "Ограничения:" in formatted
+    assert "Соответствие проекту:" in formatted
     assert "Почему:" in formatted
     assert "Подходящие компоненты:" in formatted
     assert "Риски и ограничения:" in formatted
@@ -77,7 +100,24 @@ def test_format_response_contains_headers_and_content_without_mutating_input():
         assert component in formatted
     for risk in response.risks:
         assert risk in formatted
+    for item in response.comparison:
+        for strength in item.strengths:
+            assert f"- {strength}" in formatted
+        for limitation in item.limitations:
+            assert f"- {limitation}" in formatted
+        assert f"- {item.fit_for_project}" in formatted
     assert response.model_dump() == original_dump
+
+
+def test_format_response_omits_comparison_section_when_empty():
+    response = _make_response(comparison=[])
+
+    formatted = cli.format_response(response)
+
+    assert "Сравнение вариантов:" not in formatted
+    assert "Сильные стороны:" not in formatted
+    assert "Ограничения:" not in formatted
+    assert "Соответствие проекту:" not in formatted
 
 
 # --- extract_structured_response ---
@@ -277,3 +317,37 @@ def test_run_cli_handles_keyboard_interrupt_during_invoke(monkeypatch):
     exit_code = cli.run_cli()
 
     assert exit_code == 0
+
+
+# --- StructuredOutputValidationError ---
+
+
+def test_structured_output_validation_error_signature_is_supported():
+    sig = signature(StructuredOutputValidationError.__init__)
+
+    assert list(sig.parameters) == ["self", "tool_name", "source", "ai_message"]
+
+
+def test_run_cli_recovers_from_structured_output_validation_error(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    structured_output_error = StructuredOutputValidationError(
+        tool_name="AdvisorResponse",
+        source=ValueError("invalid structured payload"),
+        ai_message=AIMessage(content=""),
+    )
+    agent = QueueAgent([structured_output_error])
+    monkeypatch.setattr(cli, "build_advisor_agent", lambda: agent)
+    _patch_input(monkeypatch, ["Сломанный структурированный ответ", "/exit"])
+
+    exit_code = cli.run_cli()
+
+    assert exit_code == 0
+    assert len(agent.calls) == 1
+    captured = capsys.readouterr()
+    assert "структурированный ответ" in captured.out.casefold()
+    assert "повтор" in captured.out.casefold()
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert captured.err == ""

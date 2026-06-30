@@ -6,9 +6,27 @@ from pydantic import ValidationError
 from advisor.schema import AdvisorResponse
 
 
+def _valid_comparison():
+    return [
+        {
+            "framework": "langchain",
+            "strengths": ["Развитая поддержка агентов", "Большая экосистема"],
+            "limitations": ["Быстро меняющийся API между версиями"],
+            "fit_for_project": "Хорошо подходит благодаря гибкой оркестрации.",
+        },
+        {
+            "framework": "llamaindex",
+            "strengths": ["Сильная поддержка RAG"],
+            "limitations": ["Меньше возможностей для сложных агентов"],
+            "fit_for_project": "Подходит, если в приоритете поиск по документам.",
+        },
+    ]
+
+
 def _valid_payload(**overrides):
     payload = {
         "recommended_framework": "langchain",
+        "comparison": _valid_comparison(),
         "reasoning": [
             "Хорошая поддержка агентов через create_agent",
             "Широкая экосистема интеграций",
@@ -25,6 +43,7 @@ def test_valid_response_is_created_successfully():
 
     assert response.model_dump() == {
         "recommended_framework": "langchain",
+        "comparison": _valid_comparison(),
         "reasoning": [
             "Хорошая поддержка агентов через create_agent",
             "Широкая экосистема интеграций",
@@ -95,3 +114,81 @@ def test_empty_suitable_components_list_raises_validation_error():
 def test_empty_risks_list_raises_validation_error():
     with pytest.raises(ValidationError):
         AdvisorResponse(**_valid_payload(risks=[]))
+
+
+# --- comparison ---
+
+
+def test_comparison_with_two_frameworks_is_valid():
+    response = AdvisorResponse(**_valid_payload())
+
+    assert len(response.comparison) == 2
+    assert response.comparison[0].framework == "langchain"
+    assert response.comparison[1].framework == "llamaindex"
+    assert response.comparison[0].fit_for_project == (
+        "Хорошо подходит благодаря гибкой оркестрации."
+    )
+
+
+def test_comparison_can_be_empty():
+    response = AdvisorResponse(**_valid_payload(comparison=[]))
+
+    assert response.comparison == []
+
+
+def test_unknown_framework_inside_comparison_raises_validation_error():
+    broken_comparison = _valid_comparison()
+    broken_comparison[0]["framework"] = "django"
+
+    with pytest.raises(ValidationError):
+        AdvisorResponse(**_valid_payload(comparison=broken_comparison))
+
+
+def test_empty_strengths_inside_comparison_raises_validation_error():
+    broken_comparison = _valid_comparison()
+    broken_comparison[0]["strengths"] = []
+
+    with pytest.raises(ValidationError):
+        AdvisorResponse(**_valid_payload(comparison=broken_comparison))
+
+
+def test_empty_limitations_inside_comparison_raises_validation_error():
+    broken_comparison = _valid_comparison()
+    broken_comparison[0]["limitations"] = []
+
+    with pytest.raises(ValidationError):
+        AdvisorResponse(**_valid_payload(comparison=broken_comparison))
+
+
+def test_blank_fit_for_project_inside_comparison_raises_validation_error():
+    broken_comparison = _valid_comparison()
+    broken_comparison[0]["fit_for_project"] = "   "
+
+    with pytest.raises(ValidationError):
+        AdvisorResponse(**_valid_payload(comparison=broken_comparison))
+
+
+def test_too_many_comparison_items_raises_validation_error():
+    base_item = _valid_comparison()[0]
+    frameworks = [
+        "langchain",
+        "llamaindex",
+        "haystack",
+        "semantic_kernel",
+        "crewai",
+    ]
+    too_many_comparison = [
+        {**base_item, "framework": framework} for framework in frameworks
+    ]
+    too_many_comparison.append({**base_item, "framework": "langchain"})
+
+    with pytest.raises(ValidationError):
+        AdvisorResponse(**_valid_payload(comparison=too_many_comparison))
+
+
+def test_extra_field_inside_comparison_item_raises_validation_error():
+    broken_comparison = _valid_comparison()
+    broken_comparison[0]["confidence"] = 0.9
+
+    with pytest.raises(ValidationError):
+        AdvisorResponse(**_valid_payload(comparison=broken_comparison))

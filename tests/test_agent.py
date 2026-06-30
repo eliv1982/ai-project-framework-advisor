@@ -69,21 +69,56 @@ def test_explicit_arguments_take_priority_over_environment(monkeypatch):
     )
 
 
-def test_creates_in_memory_saver_when_checkpointer_not_provided(monkeypatch):
+def test_creates_in_memory_saver_with_advisor_response_allowlist_when_checkpointer_not_provided(
+    monkeypatch,
+):
     fake_model_instance = object()
     fake_chat_openai = MagicMock(return_value=fake_model_instance)
     fake_create_agent = MagicMock(return_value="created-agent")
     fake_checkpointer_instance = object()
     fake_in_memory_saver = MagicMock(return_value=fake_checkpointer_instance)
+    fake_serializer_instance = object()
+    fake_json_plus_serializer = MagicMock(return_value=fake_serializer_instance)
 
     monkeypatch.setattr(agent_module, "ChatOpenAI", fake_chat_openai)
     monkeypatch.setattr(agent_module, "create_agent", fake_create_agent)
     monkeypatch.setattr(agent_module, "InMemorySaver", fake_in_memory_saver)
+    monkeypatch.setattr(agent_module, "JsonPlusSerializer", fake_json_plus_serializer)
 
     agent_module.build_advisor_agent(api_key="test-key", model_name="test-model")
 
-    fake_in_memory_saver.assert_called_once_with()
+    fake_json_plus_serializer.assert_called_once_with(
+        allowed_msgpack_modules=[
+            agent_module.AdvisorResponse,
+            agent_module.FrameworkComparison,
+        ]
+    )
+    fake_in_memory_saver.assert_called_once_with(serde=fake_serializer_instance)
     assert fake_create_agent.call_args.kwargs["checkpointer"] is fake_checkpointer_instance
+
+
+def test_does_not_create_in_memory_saver_when_checkpointer_provided(monkeypatch):
+    fake_model_instance = object()
+    fake_chat_openai = MagicMock(return_value=fake_model_instance)
+    fake_create_agent = MagicMock(return_value="created-agent")
+    fake_in_memory_saver = MagicMock()
+    fake_json_plus_serializer = MagicMock()
+    custom_checkpointer = object()
+
+    monkeypatch.setattr(agent_module, "ChatOpenAI", fake_chat_openai)
+    monkeypatch.setattr(agent_module, "create_agent", fake_create_agent)
+    monkeypatch.setattr(agent_module, "InMemorySaver", fake_in_memory_saver)
+    monkeypatch.setattr(agent_module, "JsonPlusSerializer", fake_json_plus_serializer)
+
+    agent_module.build_advisor_agent(
+        api_key="test-key",
+        model_name="test-model",
+        checkpointer=custom_checkpointer,
+    )
+
+    fake_json_plus_serializer.assert_not_called()
+    fake_in_memory_saver.assert_not_called()
+    assert fake_create_agent.call_args.kwargs["checkpointer"] is custom_checkpointer
 
 
 def test_missing_api_key_raises_value_error(monkeypatch):
@@ -158,6 +193,9 @@ def test_system_prompt_contains_key_constraints():
     assert "compare_frameworks" in prompt
     assert "инструмент" in casefolded_prompt
     assert "выдум" in casefolded_prompt or "придум" in casefolded_prompt
+    assert "comparison" in casefolded_prompt
+    assert "отдельный элемент для каждого" in casefolded_prompt
+    assert "победител" in casefolded_prompt
     assert "AdvisorResponse" in prompt or all(
         field in prompt
         for field in (

@@ -13,8 +13,9 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-from advisor.schema import AdvisorResponse
+from advisor.schema import AdvisorResponse, FrameworkComparison
 from advisor.tools import compare_frameworks, get_framework_profile
 
 SYSTEM_PROMPT = """Ты — агент-консультант, который помогает выбрать фреймворк для построения ИИ-проекта на основе LLM.
@@ -31,18 +32,27 @@ SYSTEM_PROMPT = """Ты — агент-консультант, который п
 Использование инструментов:
 - вызывай get_framework_profile, когда пользователь спрашивает об одном конкретном фреймворке;
 - вызывай compare_frameworks, когда нужно выбрать фреймворк для проекта или сравнить несколько вариантов;
+- если пользователь просит сравнить несколько фреймворков, сначала вызови compare_frameworks для всех названных вариантов и релевантных критериев — не пропускай этот шаг;
 - для итоговой рекомендации по проекту сначала определи как минимум двух разумных кандидатов и сравни их по релевантным критериям через compare_frameworks;
 - не вызывай инструменты повторно без необходимости — если нужные данные уже получены в этом диалоге, используй их повторно.
 
 Критерии выбора: учитывай задачу проекта, необходимость RAG, поддержку агентов, потребность в многоагентной системе, важность явного и предсказуемого конвейера, экосистему интеграций, порог входа команды и известные ограничения фреймворков.
 
+Явное сравнение (поле comparison):
+- поле comparison должно содержать отдельный элемент для каждого реально рассмотренного фреймворка (того, для которого ты вызывал get_framework_profile или compare_frameworks в этом ответе);
+- в каждом элементе comparison должны быть сильные стороны (strengths), ограничения (limitations) и оценка соответствия именно текущему проекту (fit_for_project) — не общие характеристики фреймворка, а применительно к описанному проекту;
+- нельзя заменять сравнение перечислением достоинств только победителя: если рассмотрено несколько фреймворков, comparison должен описывать каждого кандидата, а не только recommended_framework;
+- recommended_framework выбирается только после явного сравнения кандидатов, а не до него;
+- если пользователь спрашивает только об одном фреймворке и сравнение не требуется, comparison может быть пустым списком.
+
 Формат финального ответа должен соответствовать схеме AdvisorResponse:
 - recommended_framework — ровно один канонический ключ из списка выше;
+- comparison — список сравнений рассмотренных фреймворков (см. правила выше), может быть пустым только при вопросе об одном фреймворке;
 - reasoning — конкретные причины выбора, основанные на данных инструментов;
 - suitable_components — реальные компоненты выбранного фреймворка (из его профиля), которые подходят проекту;
 - risks — реальные ограничения и компромиссы рекомендации.
 
-Язык: формулируй reasoning, suitable_components и risks на русском языке, за исключением официальных названий компонентов и фреймворков (например, "LangGraph", "Crews", "Workflows").
+Язык: формулируй comparison, reasoning, suitable_components и risks на русском языке, за исключением официальных названий компонентов и фреймворков (например, "LangGraph", "Crews", "Workflows").
 
 Недостаточные данные: если пользователь описал проект не полностью, не выдумывай отсутствующие требования. Дай осторожную предварительную рекомендацию на основе того, что уже известно, и явно отметь неопределённость в reasoning или risks.
 
@@ -89,9 +99,16 @@ def build_advisor_agent(
         api_key=resolved_api_key,
     )
 
-    resolved_checkpointer = (
-        checkpointer if checkpointer is not None else InMemorySaver()
-    )
+    if checkpointer is not None:
+        resolved_checkpointer = checkpointer
+    else:
+        serializer = JsonPlusSerializer(
+            allowed_msgpack_modules=[
+                AdvisorResponse,
+                FrameworkComparison,
+            ],
+        )
+        resolved_checkpointer = InMemorySaver(serde=serializer)
 
     return create_agent(
         model=model,

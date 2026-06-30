@@ -24,6 +24,30 @@ NonEmptyText = Annotated[
 ]
 
 
+class FrameworkComparison(BaseModel):
+    """Сравнение одного рассмотренного фреймворка для конкретного проекта."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    framework: FrameworkKey
+    strengths: list[NonEmptyText] = Field(
+        min_length=1,
+        max_length=3,
+        description="Сильные стороны фреймворка именно для описанного проекта.",
+    )
+    limitations: list[NonEmptyText] = Field(
+        min_length=1,
+        max_length=3,
+        description="Ограничения фреймворка именно для описанного проекта.",
+    )
+    fit_for_project: NonEmptyText = Field(
+        description="Краткая оценка соответствия фреймворка требованиям проекта.",
+    )
+
+
 class AdvisorResponse(BaseModel):
     """Структурированная рекомендация по выбору фреймворка для ИИ-проекта."""
 
@@ -36,6 +60,16 @@ class AdvisorResponse(BaseModel):
         description=(
             "Канонический ключ одного рекомендованного фреймворка: "
             "langchain, llamaindex, haystack, semantic_kernel или crewai."
+        ),
+    )
+    comparison: list[FrameworkComparison] = Field(
+        default_factory=list,
+        max_length=5,
+        description=(
+            "Явное сравнение рассмотренных фреймворков. "
+            "При запросе сравнения или выборе между несколькими вариантами "
+            "список должен содержать по одному элементу для каждого кандидата. "
+            "При вопросе только об одном фреймворке список может быть пустым."
         ),
     )
     reasoning: list[NonEmptyText] = Field(
@@ -67,5 +101,6 @@ class AdvisorResponse(BaseModel):
 __all__ = [
     "FrameworkKey",
     "NonEmptyText",
+    "FrameworkComparison",
     "AdvisorResponse",
 ]
