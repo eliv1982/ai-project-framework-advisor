@@ -21,20 +21,28 @@ from advisor.framework_data import (
 ToolResult = dict[str, object]
 
 
-def _normalize_framework_name(name: str) -> str:
-    """Приводит название фреймворка к каноническому ключу FRAMEWORK_PROFILES.
+def normalize_name(name: str) -> str:
+    """Точная нормализация названия: обрезка пробелов, casefold, "_" и "-"
+    как пробелы, схлопывание внутренних пробелов.
 
-    Выполняет только точную нормализацию (обрезка пробелов, casefold,
-    схлопывание внутренних пробелов) и поиск в FRAMEWORK_ALIASES.
-    Нечёткий подбор и угадывание названия не выполняются.
+    Общее правило для названий фреймворков и компонентов профилей.
     """
-    normalized = " ".join(
+    return " ".join(
         name.strip()
         .casefold()
         .replace("_", " ")
         .replace("-", " ")
         .split()
     )
+
+
+def normalize_framework_name(name: str) -> str:
+    """Приводит название фреймворка к каноническому ключу FRAMEWORK_PROFILES.
+
+    Выполняет только точную нормализацию (normalize_name) и поиск в
+    FRAMEWORK_ALIASES. Нечёткий подбор и угадывание названия не выполняются.
+    """
+    normalized = normalize_name(name)
 
     if not normalized:
         raise ValueError("Название фреймворка не может быть пустым.")
@@ -120,7 +128,7 @@ def get_framework_profile(framework_name: str) -> ToolResult:
     фреймворков.
     """
     try:
-        canonical_key = _normalize_framework_name(framework_name)
+        canonical_key = normalize_framework_name(framework_name)
         profile = _get_profile(canonical_key)
     except ValueError as error:
         return {
@@ -170,7 +178,7 @@ def compare_frameworks(
     try:
         canonical_frameworks: list[str] = []
         for framework_name in framework_names:
-            canonical_key = _normalize_framework_name(framework_name)
+            canonical_key = normalize_framework_name(framework_name)
             if canonical_key not in canonical_frameworks:
                 canonical_frameworks.append(canonical_key)
 
@@ -229,4 +237,6 @@ def compare_frameworks(
 __all__ = [
     "get_framework_profile",
     "compare_frameworks",
+    "normalize_name",
+    "normalize_framework_name",
 ]

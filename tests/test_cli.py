@@ -1,25 +1,49 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from inspect import signature
 
 import pytest
+from fake_model import build_scripted_agent, final_answer
 from langchain.agents.structured_output import StructuredOutputValidationError
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 
 import advisor.cli as cli
 from advisor.schema import AdvisorResponse
+from advisor.tools import compare_frameworks
+
+
+def _grounded_messages():
+    """Real LangChain trace of one turn with a successful compare_frameworks call."""
+    call = {
+        "name": "compare_frameworks",
+        "args": {
+            "framework_names": ["langchain", "llamaindex"],
+            "criteria": ["typical_components"],
+        },
+        "id": "call-1",
+    }
+    return [
+        HumanMessage("Нужен RAG"),
+        AIMessage(content="", tool_calls=[call]),
+        compare_frameworks.invoke({**call, "type": "tool_call"}),
+    ]
 
 
 class QueueAgent:
     """Fake agent: yields one queued outcome per invoke() call.
 
     Each queued outcome is either a dict (used as structured_response
-    payload) or an Exception instance to be raised.
+    payload) or an Exception instance to be raised. By default the result
+    carries a grounded message trace (see _grounded_messages); pass
+    messages=... to override it.
     """
 
-    def __init__(self, outcomes):
+    def __init__(self, outcomes, messages=None):
         self._outcomes = list(outcomes)
+        self._messages = messages
         self.calls = []
 
     def invoke(self, messages, config=None):
@@ -27,7 +51,8 @@ class QueueAgent:
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
-        return {"structured_response": outcome}
+        trace = _grounded_messages() if self._messages is None else self._messages
+        return {"messages": trace, "structured_response": outcome}
 
 
 def _make_response(**overrides):
@@ -317,6 +342,156 @@ def test_run_cli_handles_keyboard_interrupt_during_invoke(monkeypatch):
     exit_code = cli.run_cli()
 
     assert exit_code == 0
+
+
+def test_run_cli_rejects_ungrounded_response_and_continues(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    payload = _make_response().model_dump()
+    agent = QueueAgent([payload], messages=[HumanMessage("Нужен RAG")])
+    monkeypatch.setattr(cli, "build_advisor_agent", lambda: agent)
+    _patch_input(monkeypatch, ["Запрос без инструментов", "/exit"])
+
+    exit_code = cli.run_cli()
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Рекомендация отклонена" in captured.out
+    assert "Рекомендованный фреймворк" not in captured.out
+    assert "Traceback" not in captured.out + captured.err
+    assert captured.err == ""
+
+
+def test_run_cli_rejects_direct_answer_from_compiled_agent(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    agent, _ = build_scripted_agent(monkeypatch, [final_answer()])
+    monkeypatch.setattr(cli, "build_advisor_agent", lambda: agent)
+    _patch_input(monkeypatch, ["Посоветуй фреймворк", "/exit"])
+
+    exit_code = cli.run_cli()
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Рекомендация отклонена" in captured.out
+    assert "Рекомендованный фреймворк" not in captured.out
+    assert "Traceback" not in captured.out + captured.err
+
+
+# --- обычные сбои провайдера/сети ---
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("upstream failed: sk-secret-token connection reset"),
+        ConnectionError("sk-secret-token connection reset"),
+        TimeoutError("sk-secret-token connection reset"),
+        Exception("sk-secret-token connection reset"),
+    ],
+)
+def test_run_cli_handles_ordinary_provider_error_without_leaking_details(
+    monkeypatch, capsys, error
+):
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    agent = QueueAgent([error, _make_response().model_dump()])
+    monkeypatch.setattr(cli, "build_advisor_agent", lambda: agent)
+    _patch_input(monkeypatch, ["Первый запрос", "Второй запрос", "/exit"])
+
+    exit_code = cli.run_cli()
+
+    assert exit_code == 0
+    assert len(agent.calls) == 2
+    captured = capsys.readouterr()
+    assert "Не удалось получить ответ от модели" in captured.out
+    assert "sk-secret-token" not in captured.out + captured.err
+    assert "connection reset" not in captured.out + captured.err
+    assert "Traceback" not in captured.out + captured.err
+    assert captured.err == ""
+    # После сбоя диалог продолжается и следующий запрос обрабатывается.
+    assert "Рекомендованный фреймворк: LangChain (langchain)" in captured.out
+
+
+def test_run_cli_does_not_swallow_system_exit(monkeypatch):
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    agent = QueueAgent([SystemExit(3)])
+    monkeypatch.setattr(cli, "build_advisor_agent", lambda: agent)
+    _patch_input(monkeypatch, ["Запрос"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run_cli()
+
+    assert exit_info.value.code == 3
+
+
+# --- -h / --help ---
+
+
+def _forbid_configuration(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("Конфигурация не должна загружаться для справки.")
+
+    monkeypatch.setattr(cli, "load_dotenv", fail)
+    monkeypatch.setattr(cli, "build_advisor_agent", fail)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_flag_prints_help_and_exits_0_without_configuration(
+    monkeypatch, capsys, flag
+):
+    _forbid_configuration(monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main([flag])
+
+    assert exit_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "framework-advisor" in captured.out
+    assert "OPENAI_API_KEY" in captured.out
+    assert "/new" in captured.out
+    assert captured.err == ""
+
+
+def test_unknown_argument_exits_with_usage_error_without_configuration(
+    monkeypatch, capsys
+):
+    _forbid_configuration(monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--no-such-flag"])
+
+    assert exit_info.value.code == 2
+    assert "usage" in capsys.readouterr().err.casefold()
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_main_without_arguments_runs_interactive_cli(monkeypatch, exit_code):
+    monkeypatch.setattr(cli, "run_cli", lambda: exit_code)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main([])
+
+    assert exit_info.value.code == exit_code
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_works_in_real_process_without_api_key(tmp_path, monkeypatch, flag):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "advisor.cli", flag],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    assert completed.returncode == 0
+    assert "usage: framework-advisor" in completed.stdout
+    assert completed.stderr == ""
 
 
 # --- StructuredOutputValidationError ---

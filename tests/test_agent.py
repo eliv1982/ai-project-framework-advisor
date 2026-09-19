@@ -176,6 +176,24 @@ def test_blank_api_key_or_model_name_raises_value_error(
     fake_create_agent.assert_not_called()
 
 
+def test_system_prompt_requires_fresh_tool_calls_on_every_turn():
+    casefolded_prompt = agent_module.SYSTEM_PROMPT.casefold()
+
+    assert "каждое новое сообщение пользователя" in casefolded_prompt
+    assert "будет отклонён" in casefolded_prompt
+    # Старое указание переиспользовать данные прошлых ходов противоречит
+    # проверке текущего хода.
+    assert "используй их повторно" not in casefolded_prompt
+
+
+def test_system_prompt_ties_components_and_comparison_to_tool_data():
+    casefolded_prompt = agent_module.SYSTEM_PROMPT.casefold()
+
+    assert "typical_components" in casefolded_prompt
+    assert "дословно" in casefolded_prompt
+    assert "только для них" in casefolded_prompt
+
+
 def test_system_prompt_contains_key_constraints():
     prompt = agent_module.SYSTEM_PROMPT
     casefolded_prompt = prompt.casefold()

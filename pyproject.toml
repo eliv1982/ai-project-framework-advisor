@@ -1,7 +1,7 @@
 [project]
 name = "ai-project-framework-advisor"
 version = "0.1.0"
-description = "Учебный агент на LangChain, рекомендующий фреймворк (LangChain, LlamaIndex или Haystack) для описанного пользователем ИИ-проекта."
+description = "Учебный CLI-агент на LangChain: рекомендует фреймворк для ИИ-проекта по локальным профилям, собственным инструментам данных и структурированному ответу."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

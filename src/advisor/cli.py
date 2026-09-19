@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,7 @@ from pydantic import ValidationError
 
 from advisor.agent import build_advisor_agent
 from advisor.framework_data import FRAMEWORK_PROFILES
+from advisor.grounding import GroundingError, verify_grounded_response
 from advisor.schema import AdvisorResponse
 
 EXIT_COMMANDS = {"/exit", "/quit"}
@@ -101,7 +103,11 @@ def invoke_agent(
     user_message: str,
     thread_id: str,
 ) -> AdvisorResponse:
-    """Выполняет один вызов агента и возвращает структурированный ответ."""
+    """Выполняет один вызов агента и возвращает проверенный структурированный ответ.
+
+    Ответ принимается только если в текущем ходе был успешный вызов
+    локального инструмента данных (иначе — GroundingError).
+    """
     result = agent.invoke(
         {
             "messages": [
@@ -117,7 +123,8 @@ def invoke_agent(
             }
         },
     )
-    return extract_structured_response(result)
+    response = extract_structured_response(result)
+    return verify_grounded_response(result.get("messages"), response)
 
 
 def run_cli() -> int:
@@ -174,17 +181,56 @@ def run_cli() -> int:
                 "Попробуйте повторить запрос ещё раз."
             )
             continue
+        except GroundingError as error:
+            print(f"Рекомендация отклонена. {error} Попробуйте повторить запрос.")
+            continue
         except (ValueError, ValidationError) as error:
             print(f"Не удалось обработать запрос: {error}")
             continue
         except KeyboardInterrupt:
             print("Завершение работы.")
             return 0
+        except Exception:
+            # Обычный сбой провайдера/сети: текст исключения и traceback
+            # намеренно не выводятся (могут содержать внутренние детали).
+            print(
+                "Не удалось получить ответ от модели: непредвиденная ошибка "
+                "(возможна проблема с сетью или провайдером). "
+                "Попробуйте повторить запрос позже."
+            )
+            continue
 
         print(format_response(response))
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="framework-advisor",
+        description=(
+            "Агент-советник по выбору фреймворка для ИИ-проекта: "
+            "интерактивный диалог в консоли."
+        ),
+        epilog=(
+            "Настройка: переменные OPENAI_API_KEY и OPENAI_MODEL "
+            "(окружение или файл .env).\n"
+            "Команды в диалоге: /new — новый диалог, /exit или /quit — выход."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
+    )
+    parser.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        help="показать эту справку и выйти",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    # Аргументы разбираются до load_dotenv() и создания агента, поэтому
+    # справка работает без OPENAI_API_KEY.
+    build_parser().parse_args(argv)
     raise SystemExit(run_cli())
 
 
@@ -197,6 +243,7 @@ __all__ = [
     "format_response",
     "extract_structured_response",
     "invoke_agent",
+    "build_parser",
     "run_cli",
     "main",
 ]
